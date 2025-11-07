@@ -14,7 +14,7 @@ import { logWrapper } from '@utils/logWrapper';
 import { getConnectionHintNoticeField } from '@utils/sharedFields';
 
 import { transportSelect } from './descriptions';
-import { getTools } from './loadOptions';
+import { getTools, getToolParameters } from './loadOptions';
 import type { McpServerTransport, McpAuthenticationOption, McpToolIncludeMode } from './types';
 import {
 	connectMcpClient,
@@ -41,6 +41,7 @@ function getNodeConfig(
 	mode: McpToolIncludeMode;
 	includeTools: string[];
 	excludeTools: string[];
+	toolParametersConfig: Map<string, Map<string, { mode: string; staticValue?: string }>>;
 } {
 	const node = ctx.getNode();
 	const authentication = ctx.getNodeParameter(
@@ -63,6 +64,36 @@ function getNodeConfig(
 	const includeTools = ctx.getNodeParameter('includeTools', itemIndex, []) as string[];
 	const excludeTools = ctx.getNodeParameter('excludeTools', itemIndex, []) as string[];
 
+	// Process tool parameters configuration
+	const toolParametersRaw = ctx.getNodeParameter('toolParameters', itemIndex, {
+		parameters: [],
+	}) as {
+		parameters: Array<{
+			toolName: string;
+			parameterName: string;
+			mode: string;
+			staticValue?: string;
+		}>;
+	};
+
+	const toolParametersConfig = new Map<
+		string,
+		Map<string, { mode: string; staticValue?: string }>
+	>();
+
+	if (toolParametersRaw.parameters) {
+		for (const param of toolParametersRaw.parameters) {
+			if (!toolParametersConfig.has(param.toolName)) {
+				toolParametersConfig.set(param.toolName, new Map());
+			}
+			const toolParams = toolParametersConfig.get(param.toolName)!;
+			toolParams.set(param.parameterName, {
+				mode: param.mode,
+				staticValue: param.staticValue,
+			});
+		}
+	}
+
 	return {
 		authentication,
 		timeout,
@@ -71,6 +102,7 @@ function getNodeConfig(
 		mode,
 		includeTools,
 		excludeTools,
+		toolParametersConfig,
 	};
 }
 
@@ -340,6 +372,83 @@ export class McpClientTool implements INodeType {
 				},
 			},
 			{
+				displayName: 'Tool Parameters Configuration',
+				name: 'toolParameters',
+				type: 'fixedCollection',
+				placeholder: 'Add Tool Configuration',
+				default: {},
+				typeOptions: {
+					multipleValues: true,
+				},
+				description: 'Configure static parameters for specific tools',
+				options: [
+					{
+						name: 'parameters',
+						displayName: 'Tool Parameter',
+						values: [
+							{
+								displayName: 'Tool Name',
+								name: 'toolName',
+								type: 'options',
+								typeOptions: {
+									loadOptionsMethod: 'getTools',
+								},
+								default: '',
+								description: 'The tool to configure parameters for',
+							},
+							{
+								displayName: 'Parameter Name',
+								name: 'parameterName',
+								type: 'options',
+								typeOptions: {
+									loadOptionsMethod: 'getToolParameters',
+									loadOptionsDependsOn: ['toolName'],
+								},
+								default: '',
+								description:
+									'The parameter to configure (automatically loaded from the tool schema)',
+							},
+							{
+								displayName: 'Parameter Mode',
+								name: 'mode',
+								type: 'options',
+								options: [
+									{
+										name: 'Static',
+										value: 'static',
+										description: 'Use a fixed value defined by you',
+									},
+									{
+										name: 'Dynamic',
+										value: 'dynamic',
+										description: 'Let the AI provide the value',
+									},
+									{
+										name: 'Hybrid',
+										value: 'hybrid',
+										description: 'Use static value as default, but allow AI to override',
+									},
+								],
+								default: 'dynamic',
+								description: 'How this parameter should be handled',
+							},
+							{
+								displayName: 'Static Value',
+								name: 'staticValue',
+								type: 'string',
+								default: '',
+								displayOptions: {
+									show: {
+										mode: ['static', 'hybrid'],
+									},
+								},
+								description: 'The fixed value for this parameter',
+							},
+						],
+					},
+				],
+			},
+			{
 				displayName: 'Options',
 				name: 'options',
 				placeholder: 'Add Option',
@@ -365,6 +474,7 @@ export class McpClientTool implements INodeType {
 	methods = {
 		loadOptions: {
 			getTools,
+			getToolParameters,
 		},
 	};
 
@@ -405,11 +515,17 @@ export class McpClientTool implements INodeType {
 			logWrapper(
 				mcpToolToDynamicTool(
 					tool,
-					createCallTool(tool.name, client, config.timeout, (errorMessage) => {
-						const error = new NodeOperationError(node, errorMessage, { itemIndex });
-						void this.addOutputData(NodeConnectionTypes.AiTool, itemIndex, error);
-						this.logger.error(`McpClientTool: Tool "${tool.name}" failed to execute`, { error });
-					}),
+					createCallTool(
+						tool.name,
+						client,
+						config.timeout,
+						(errorMessage) => {
+							const error = new NodeOperationError(node, errorMessage, { itemIndex });
+							void this.addOutputData(NodeConnectionTypes.AiTool, itemIndex, error);
+							this.logger.error(`McpClientTool: Tool "${tool.name}" failed to execute`, { error });
+						},
+						config.toolParametersConfig.get(tool.name),
+					),
 				),
 				this,
 			),
@@ -453,13 +569,53 @@ export class McpClientTool implements INodeType {
 				const toolName = item.json.tool;
 				if (toolName === tool.name) {
 					// Extract the tool name from arguments before passing to MCP
-					const { tool: _, ...toolArguments } = item.json;
+					const { tool: _, ...aiArguments } = item.json;
+
+					// Get parameter configuration for this tool
+					const parametersConfig = config.toolParametersConfig.get(tool.name);
+
+					// Build final arguments based on parameter configuration
+					const finalArguments: IDataObject = {};
+
+					if (!parametersConfig || parametersConfig.size === 0) {
+						// No configuration, use AI parameters as-is
+						Object.assign(finalArguments, aiArguments);
+					} else {
+						// Process each configured parameter
+						parametersConfig.forEach((paramConfig, paramName) => {
+							switch (paramConfig.mode) {
+								case 'static':
+									// Use only the static value
+									finalArguments[paramName] = paramConfig.staticValue ?? '';
+									break;
+								case 'dynamic':
+									// Use AI-provided value if available
+									if (paramName in aiArguments) {
+										finalArguments[paramName] = aiArguments[paramName];
+									}
+									break;
+								case 'hybrid':
+									// Use AI value if provided, otherwise use static value
+									finalArguments[paramName] =
+										aiArguments[paramName] ?? paramConfig.staticValue ?? '';
+									break;
+							}
+						});
+
+						// Also include any AI parameters not explicitly configured
+						Object.keys(aiArguments).forEach((key) => {
+							if (!parametersConfig.has(key)) {
+								finalArguments[key] = aiArguments[key];
+							}
+						});
+					}
+
 					const params: {
 						name: string;
 						arguments: IDataObject;
 					} = {
 						name: tool.name,
-						arguments: toolArguments,
+						arguments: finalArguments,
 					};
 					const result = await client.callTool(params);
 					returnData.push({

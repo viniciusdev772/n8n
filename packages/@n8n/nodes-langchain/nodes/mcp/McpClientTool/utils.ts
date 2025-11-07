@@ -81,7 +81,13 @@ export const getErrorDescriptionFromToolCall = (result: unknown): string | undef
 };
 
 export const createCallTool =
-	(name: string, client: Client, timeout: number, onError: (error: string) => void) =>
+	(
+		name: string,
+		client: Client,
+		timeout: number,
+		onError: (error: string) => void,
+		parametersConfig?: Map<string, { mode: string; staticValue?: string }>,
+	) =>
 	async (args: IDataObject) => {
 		let result: Awaited<ReturnType<Client['callTool']>>;
 
@@ -92,10 +98,49 @@ export const createCallTool =
 			return errorDescription;
 		}
 
-		try {
-			result = await client.callTool({ name, arguments: args }, CompatibilityCallToolResultSchema, {
-				timeout,
+		// Build final arguments based on parameter configuration
+		const finalArguments: IDataObject = {};
+
+		// If no configuration, use AI parameters as-is (default behavior)
+		if (!parametersConfig || parametersConfig.size === 0) {
+			Object.assign(finalArguments, args);
+		} else {
+			// Process each configured parameter
+			parametersConfig.forEach((config, paramName) => {
+				switch (config.mode) {
+					case 'static':
+						// Use only the static value
+						finalArguments[paramName] = config.staticValue ?? '';
+						break;
+					case 'dynamic':
+						// Use AI-provided value if available
+						if (paramName in args) {
+							finalArguments[paramName] = args[paramName];
+						}
+						break;
+					case 'hybrid':
+						// Use AI value if provided, otherwise use static value
+						finalArguments[paramName] = args[paramName] ?? config.staticValue ?? '';
+						break;
+				}
 			});
+
+			// Also include any AI parameters not explicitly configured
+			Object.keys(args).forEach((key) => {
+				if (!parametersConfig.has(key)) {
+					finalArguments[key] = args[key];
+				}
+			});
+		}
+
+		try {
+			result = await client.callTool(
+				{ name, arguments: finalArguments },
+				CompatibilityCallToolResultSchema,
+				{
+					timeout,
+				},
+			);
 		} catch (error) {
 			return handleError(error);
 		}
