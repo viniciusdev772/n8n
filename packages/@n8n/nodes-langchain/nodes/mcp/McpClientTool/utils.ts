@@ -118,10 +118,6 @@ export const createCallTool =
 							finalArguments[paramName] = args[paramName];
 						}
 						break;
-					case 'hybrid':
-						// Use AI value if provided, otherwise use static value
-						finalArguments[paramName] = args[paramName] ?? config.staticValue ?? '';
-						break;
 				}
 			});
 

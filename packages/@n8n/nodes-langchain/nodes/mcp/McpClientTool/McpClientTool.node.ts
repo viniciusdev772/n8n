@@ -14,7 +14,7 @@ import { logWrapper } from '@utils/logWrapper';
 import { getConnectionHintNoticeField } from '@utils/sharedFields';
 
 import { transportSelect } from './descriptions';
-import { getTools, getToolParameters } from './loadOptions';
+import { getTools, getAllToolsWithParameters } from './loadOptions';
 import type { McpServerTransport, McpAuthenticationOption, McpToolIncludeMode } from './types';
 import {
 	connectMcpClient,
@@ -69,8 +69,7 @@ function getNodeConfig(
 		parameters: [],
 	}) as {
 		parameters: Array<{
-			toolName: string;
-			parameterName: string;
+			toolParameter: string; // Format: "toolName.paramName"
 			mode: string;
 			staticValue?: string;
 		}>;
@@ -83,11 +82,16 @@ function getNodeConfig(
 
 	if (toolParametersRaw.parameters) {
 		for (const param of toolParametersRaw.parameters) {
-			if (!toolParametersConfig.has(param.toolName)) {
-				toolParametersConfig.set(param.toolName, new Map());
+			// Split "toolName.paramName" into separate parts
+			const [toolName, parameterName] = param.toolParameter.split('.');
+
+			if (!toolName || !parameterName) continue;
+
+			if (!toolParametersConfig.has(toolName)) {
+				toolParametersConfig.set(toolName, new Map());
 			}
-			const toolParams = toolParametersConfig.get(param.toolName)!;
-			toolParams.set(param.parameterName, {
+			const toolParams = toolParametersConfig.get(toolName)!;
+			toolParams.set(parameterName, {
 				mode: param.mode,
 				staticValue: param.staticValue,
 			});
@@ -372,41 +376,37 @@ export class McpClientTool implements INodeType {
 				},
 			},
 			{
-				displayName: 'Tool Parameters Configuration',
+				displayName: '🔧 Static Parameters (User Override)',
 				name: 'toolParameters',
 				type: 'fixedCollection',
-				placeholder: 'Add Tool Configuration',
+				placeholder: 'Add Parameter Override',
 				default: {},
 				typeOptions: {
 					multipleValues: true,
 				},
-				description: 'Configure static parameters for specific tools',
+				description: 'Override MCP tool parameters with static values or let AI decide (dynamic)',
 				options: [
 					{
 						name: 'parameters',
-						displayName: 'Tool Parameter',
+						displayName: 'Parameter Override',
 						values: [
 							{
-								displayName: 'Tool Name',
-								name: 'toolName',
+								displayName: 'Tool → Parameter',
+								name: 'toolParameter',
 								type: 'options',
 								typeOptions: {
-									loadOptionsMethod: 'getTools',
+									loadOptionsMethod: 'getAllToolsWithParameters',
+									loadOptionsDependsOn: [
+										'endpointUrl',
+										'serverTransport',
+										'include',
+										'includeTools',
+										'excludeTools',
+									],
 								},
 								default: '',
-								description: 'The tool to configure parameters for',
-							},
-							{
-								displayName: 'Parameter Name',
-								name: 'parameterName',
-								type: 'options',
-								typeOptions: {
-									loadOptionsMethod: 'getToolParameters',
-									loadOptionsDependsOn: ['toolName'],
-								},
-								default: '',
-								description:
-									'The parameter to configure (automatically loaded from the tool schema)',
+								description: 'Select which tool parameter to override (⭐ = required parameter)',
+								required: true,
 							},
 							{
 								displayName: 'Parameter Mode',
@@ -423,11 +423,6 @@ export class McpClientTool implements INodeType {
 										value: 'dynamic',
 										description: 'Let the AI provide the value',
 									},
-									{
-										name: 'Hybrid',
-										value: 'hybrid',
-										description: 'Use static value as default, but allow AI to override',
-									},
 								],
 								default: 'dynamic',
 								description: 'How this parameter should be handled',
@@ -439,7 +434,7 @@ export class McpClientTool implements INodeType {
 								default: '',
 								displayOptions: {
 									show: {
-										mode: ['static', 'hybrid'],
+										mode: ['static'],
 									},
 								},
 								description: 'The fixed value for this parameter',
@@ -474,7 +469,7 @@ export class McpClientTool implements INodeType {
 	methods = {
 		loadOptions: {
 			getTools,
-			getToolParameters,
+			getAllToolsWithParameters,
 		},
 	};
 
@@ -593,11 +588,6 @@ export class McpClientTool implements INodeType {
 									if (paramName in aiArguments) {
 										finalArguments[paramName] = aiArguments[paramName];
 									}
-									break;
-								case 'hybrid':
-									// Use AI value if provided, otherwise use static value
-									finalArguments[paramName] =
-										aiArguments[paramName] ?? paramConfig.staticValue ?? '';
 									break;
 							}
 						});

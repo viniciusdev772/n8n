@@ -9,7 +9,7 @@ export type McpToolIncludeMode = 'all' | 'selected' | 'except';
 
 export type McpAuthenticationOption = 'none' | 'headerAuth' | 'bearerAuth' | 'mcpOAuth2Api';
 
-export type ParameterMode = 'static' | 'dynamic' | 'hybrid';
+export type ParameterMode = 'static' | 'dynamic';
 
 export type ToolParameterConfig = {
 	toolName: string;
